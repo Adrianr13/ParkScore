@@ -1,0 +1,449 @@
+---
+title: '**Exploratory Data Analysis with R - the Parkscore Index**'
+author: "Adrián Riveros"
+date: '`r Sys.Date()`'
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## **Project Overview**
+
+### The dataset
+
+The ParkScore Index is an index created by the Trust for Public Land (TPL) which keeps track of the green space availability in U.S. cities; it measures how well cities meet their resident's need for parks based on four metrics: park access, acreage, investment and amenities.
+
+This dataset was TidyTuesday's featured dataset for the week of 2021-06-22. TidyTuesday is a weekly data project aimed at the R ecosystem where users apply their R skills, get feedback, explore other's work, and connect with the greater #Rstats community.
+
+### Main findings
+
+Using the dataset provided by the TPL, I found the following:\
+
+- Out of the major cities, Washington DC has had the best rated parks since 2015. Out of all cities in the dataset, Minneapolis has had the best ranked parks almost every year since 2012.\
+
+- Northeastern cities haved had the best parks in general since 2012, although Midwestern cities' parks have had great improvements and have become the best in recent years (beginning in 2018).\
+
+- Southern cities have consistently had the worst ranked parks in the US.\
+
+- Park access, investment and amenities are positively related to total score; acreage is also positively related to total score, although there's a much weaker relationship. Out of the four metrics the correlation between investment and total park score is the strongest one (2020 data). This could suggest that investment is the most important component in improving the quality of parks; further causal analysis is required.\
+
+- Acreage is weakly negatively related to amenities and accessibility. This suggests that large parks tend to have fewer amenities and are less accessible. The reasons for these relationships could be that large parks are located on the outskirts of a city, making them more inaccessible, and that they may act as local "Nature parks", and as a result amenities may not be very much needed. Again, further causal analysis is needed.
+
+
+```{r load, warning=FALSE, message=FALSE}
+parks <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-06-22/parks.csv')
+library(tidyverse) #Data manipulation package
+library(kableExtra) #For making nice looking tables
+library(cowplot) #ggplot add-on
+library(corrplot) #For creating correlation matrices
+library(forcats) #For working with categorical variables
+library(maps) #US cities coordinates
+library(usmap) #US map dataframes
+library(ggrepel) #For labelling data
+
+```
+
+## **Exploring and cleaning the data**
+
+### Data exploration
+
+Let's check out our dataset.
+
+```{r}
+rmarkdown::paged_table(head(parks))
+```
+
+Our dataset has 27 variables including *year*, *city* and other discrete and continuous variables. We can see that some of these variables end with "data" while others end with "points". According the Trust for Public Land, variables ending with "data" contain raw data, while variables ending with "points" are essentially yearly normalized values (a higher number is better).
+
+We're interested specifically in the following variables:\
+- *year*, the year of measurement;\
+- *city*, the city name;\
+- *med_park_size_points*, the median park size points;\
+- *park_pct_city_points*, the parkland as percentage of city area points;\
+- *pct_near_park_points*, the percent of residents within a 10 minute walk to park points;\
+- *spend_per_resident_points*, the spending per resident in points;\
+- *amenities_points*, the amenities points total (i.e. recreational area);\
+- *total_points*, total points\
+
+Our four main metrics are represented by the *med_park_size_points* (acreage), *park_pct_city_points* (acreage), *pct_near_park_points* (accessibility), *spend_per_resident_points* (investment), and *amenities_points* (amenities) variables. Note that the acreage metric is computed using both the *med_park_size_points* and *park_pct_city_points*.
+
+We can start off by checking which cities are in the dataset.
+
+```{r}
+cities <- parks %>%
+  count(city) 
+
+rmarkdown::paged_table(cities)
+
+```
+
+There are 102 observations and we can rename two cities: Washington D.C. and Charlotte. 
+
+```{r}
+parks$city <- case_when(
+  parks$city == "Washington, DC" ~ "Washington, D.C.",
+  parks$city == "Charlotte/Mecklenburg County" ~ "Charlotte",
+  TRUE ~ parks$city
+)
+```
+
+Let's get rid of unnecessary columns...
+
+```{r}
+parks <- parks %>%
+  select(-city_dup)
+```
+
+We can compute the average score for each of the main metrics by year. 
+
+```{r}
+parks %>%
+  select(year, city, amenities_points, spend_per_resident_points, pct_near_park_points, park_pct_city_points, 
+         med_park_size_points, total_points, total_pct) %>%
+  group_by(year) %>%
+  summarise(avg_amenities = mean(amenities_points),
+            avg_spend = mean(spend_per_resident_points),
+            avg_near_park = mean(pct_near_park_points),
+            avg_pct_city = mean(park_pct_city_points),
+            avg_med_park_size = mean(med_park_size_points),
+            avg_total_pct = mean(total_pct)) %>%
+  kable(caption = "Average metric scores") %>%
+  kable_minimal()
+```
+It seems like average scores are more or less consistent in the first few years, but change quite a bit in the last two years. Perhaps the maximum score varies each year. Let's take a look at the maximum values for all years.
+
+```{r}
+parks %>%
+  select(year, city, amenities_points, spend_per_resident_points, pct_near_park_points, park_pct_city_points, 
+         med_park_size_points, total_points, total_pct) %>%
+  group_by(year) %>%
+  summarise(max_amenities = max(amenities_points),
+            max_spend = max(spend_per_resident_points),
+            max_near_park = max(pct_near_park_points),
+            max_pct_city = max(park_pct_city_points),
+            max_med_park_size = max(med_park_size_points),
+            max_total_points = max(total_points)) %>%
+  kable(caption = "Maximum metric scores") %>%
+  kable_minimal()
+```
+
+As we can see from the last table, the maximum score for these variables has changed over the years. For instance, it appears that the maximum score for the *amenities_point* variable (the first column) has gone from 80 in 2015 to 20 in 2016 and 2017, to 40 in 2018, and to 100 in 2019 and 2020. The maximum potential score for the other metrics are slightly more consistent, but there's still a big change in the scoring methodology for 2019 and 2020. We'll now standardize the scores in the next section.
+
+### Standardizing the data
+
+Let's standardize the scores across all years such that they are comparable across time. That is, the amenities score, investment score and accessibility score should have a maximum score of 100. The acreage score is constructed using the *pct_city* and *med_park_size* variables, so, for both of these variables, the maximum score should be 50.
+
+```{r}
+parks_standardized <- parks %>%
+  select(year, city, amenities_points, spend_per_resident_points, pct_near_park_points, park_pct_city_points, 
+         med_park_size_points, total_points, total_pct, rank) %>%
+  mutate(amenities_points = 
+           case_when(
+             year == 2015 ~ amenities_points*1.25,
+             year == 2016 ~ amenities_points*5,
+             year == 2017 ~ amenities_points*5,
+             year == 2018 ~ amenities_points*2.5,
+             TRUE ~ amenities_points),
+         spend_per_resident_points = 
+           case_when(
+             year %in% c(2012, 2013, 2014, 2015, 2016, 2017) ~ spend_per_resident_points*5,
+             year == 2018 ~ spend_per_resident_points*2.5,
+             TRUE ~ spend_per_resident_points),
+         pct_near_park_points = 
+           case_when(
+             year %in% c(2012, 2013, 2014, 2015, 2016, 2017, 2018) ~ pct_near_park_points*2.5,
+             TRUE ~ pct_near_park_points),
+         park_pct_city_points =
+           case_when(
+             year %in% c(2012, 2013, 2014, 2015, 2016, 2017, 2018) ~ park_pct_city_points*2.5,
+             TRUE ~ park_pct_city_points),
+         med_park_size_points = 
+           case_when(
+             year %in% c(2012, 2013, 2014, 2015, 2016, 2017, 2018) ~ med_park_size_points*2.5,
+             TRUE ~ med_park_size_points))
+```
+
+Let's check the scores again...
+
+```{r}
+parks_standardized %>%
+  select(year, city, amenities_points, spend_per_resident_points, pct_near_park_points, park_pct_city_points, 
+         med_park_size_points, total_points, total_pct) %>%
+  group_by(year) %>%
+  summarise(avg_amenities = mean(amenities_points),
+            avg_spend = mean(spend_per_resident_points),
+            avg_near_park = mean(pct_near_park_points),
+            avg_pct_city = mean(park_pct_city_points),
+            avg_med_park_size = mean(med_park_size_points)) %>%
+  kable(caption = "Average metric scores") %>%
+  kable_minimal()
+```
+
+The values are more consistent and the variables appear to have been standardized correctly.
+
+### Creating the categorical *region* variable
+
+We can create the categorical variable *region* to enhance our analysis afterwards. We'll create four categories: west, midwest, south and northeast. Each city in our dataset will fall under one of these four categories.
+
+```{r}
+parks_standardized <- parks_standardized %>%
+  mutate(region =
+           case_when(
+             city %in% c("Albuquerque", "Anaheim", "Anchorage", "Aurora", "Bakersfield", "Boise", "Chandler",
+                         "Chula Vista", "Colorado Springs", "Denver", "Henderson", "Honolulu", "Irvine", 
+                         "Las Vegas", "Long Beach", "Los Angeles", "North Las Vegas", "Oakland", "Phoenix", 
+                         "Portland", "Reno", "Riverside", "Sacramento", "San Diego", "San Francisco", "Santa Ana", 
+                         "Scottsdale", "Seattle") ~ "west",
+             city %in% c("Arlington, Texas", "Arlington, Virginia", "Atlanta", "Austin", "Baton Rouge", 
+                         "Charlotte", "Chesapeake", "Corpus Christi", "Dallas", "Durham", "El Paso", 
+                         "Fort Worth", "Fremont", 
+                         "Fresno", "Garland", "Glendale", "Greensboro", "Hialeah", "Houston", "Irving", 
+                         "Jacksonville", "Laredo", "Lexington", "Louisville", "Lubbock", "Memphis", "Mesa", 
+                         "Miami", "Nashville", "New Orleans", "Norfolk", "Oklahoma City", "Orlando", "Plano", 
+                         "Raleigh", "Richmond", "San Antonio", "San Jose", "St. Petersburg", "Stockton", "Tampa", 
+                         "Tucson", "Tulsa", "Virginia Beach", "Washington, D.C.", "Winston-Salem") ~ "south",
+             city %in% c("Baltimore", "Boston", "Buffalo", "Jersey City", "New York", "Newark", "Philadelphia", 
+                         "Pittsburgh") ~ "northeast",
+             city %in% c("Chicago", "Cincinnati", "Cleveland", "Columbus", "Des Moines", "Detroit", "Fort Wayne", 
+                         "Indianapolis", "Kansas City", "Lincoln", "Madison", "Milwaukee", "Minneapolis", 
+                         "Omaha", "St. Louis", "St. Paul", "Toledo", "Wichita") ~ "midwest"))
+
+parks_standardized$region <- as_factor(parks_standardized$region)
+```
+
+### Getting the coordinates for US cities
+
+We'll also need to get the coordinates for the cities in our dataset in order to create a map of the US later on. These coordinates can be obtained from the 'usmap' package which provides a dataframe listing coordinates for medium to large sized cities. Below is the code used to prepare the data.
+
+```{r, warning=FALSE, message = FALSE}
+
+#Clean us.cities dataset (from the 'usmap' package)
+us.cities$name <- str_sub(us.cities$name, end = -4)
+
+us.cities$name <- str_replace(us.cities$name, "Saint", "St.")
+
+us.cities$name <- str_replace(us.cities$name, "WASHINGTON", "Washington, D.C.")
+
+parks_2020 <- parks_standardized %>%
+  filter(year == 2020)
+
+#Join datasets
+us.cities <- left_join(x = us.cities, y = parks_2020, by = c("name" = "city"))
+
+#Remove rows with missing values
+us.cities <- us.cities %>% 
+  drop_na()
+
+#Identify duplicate cities
+duplicates <- us.cities %>%
+add_count(name) %>%
+  filter(n > 1)
+
+#Manually check and remove duplicates
+duplicates <- duplicates[-c(2, 3, 4, 6, 9, 10, 12, 14, 16, 18, 19),]
+duplicates <- duplicates %>%
+  select(-n)
+
+#Merge duplicates dataset to us.cities
+us.cities <- filter(us.cities, 
+                    !name %in% c("Aurora", "Columbus", "Glendale", "Jacksonville", 
+                                 "Kansas City", "Lincoln", "Madison", "Newark", "Portland"))
+
+us.cities <- rbind(us.cities, duplicates)
+
+#Prepare dataset for mapping
+us.cities_map <- us.cities[, c(5, 4, 1, 2, 14, 16)]
+
+us.cities_map <- us.cities_map %>%
+  rename(state = country.etc)
+
+us.cities_mapt <- usmap_transform(us.cities_map)
+```
+
+We're now ready to visualize our data.
+
+## **Visualizing the data**
+
+The graph below shows the top ten cities in the U.S. with the best overall park scores for each year. As can be inferred from the graph, some cities  make it to the top 5 list only some years, while others are present almost every year. For example, Sacramento was among the cities with best parks in the first few years (2012 and 2013) while Washington D.C. has had one of the best scores every year since 2012 (except in 2014). Lastly, Minneapolis has had the best parks every year since 2013 except in 2019 (note: missing data for 2017).
+
+### Line graph - cities
+```{r, fig.align = 'center', echo = FALSE}
+parks_standardized %>%
+  select(year, rank, city, total_pct) %>%
+  group_by(year) %>%
+  slice_max(total_pct, n = 5) %>%
+  mutate(city = as_factor(city)) %>%
+ggplot(aes(x = year, y = total_pct, group = city, color = city)) +
+  geom_point() +
+  geom_line(size = 1) +
+  theme_classic() +
+  scale_color_brewer(palette = "Paired") +
+  ggtitle("Top 5 cities with best parks", subtitle = "As measured by total points/100") +
+  ylab("Total points") +
+  xlab("Year")
+```
+
+
+
+We can also take a look at major U.S. cities and compare their park scores.
+
+
+```{r, fig.align = 'center', echo = FALSE, warning = FALSE}
+parks_standardized %>%
+  filter(city %in% c("New York", "Washington, D.C.", "Los Angeles", "Chicago", "Houston", "Dallas", "Miami", "Philadelphia",
+                     "Atlanta", "Phoenix")) %>%
+  group_by(year) %>%
+  mutate(city = as_factor(city)) %>%
+  ggplot(aes(x = year, y = total_pct, group = city, color = city)) +
+  geom_point() +
+  geom_line(size = 1) +
+  theme_classic() +
+  scale_color_brewer(palette = "Paired") +
+  ggtitle("Park score of major US cities", subtitle = "As measured by total points/100") +
+  ylab("Total points") +
+  xlab("Year")
+```
+
+
+Among major U.S. cities, Washington D.C. has had the best parks since 2015. Overall, the trends for these cities seem to be relatively stable. It also seems that Northeastern cities have substantially better scores compared to cities located in other regions, especially those located in the South, such as Houston or Miami. Is this pattern the same for all 102 cities being analyzed?
+
+The plot below shows the average park score of each U.S. region by year. It seems that, indeed, northeastern cities have higher scores on average, than other regions, especially in the earlier years, where the Northeast region had the best score. However, Midwestern cities' park scores have increased consistently and, beginning in 2018, have had the best parks in the U.S.
+
+### Bar charts - US regions
+
+```{r, fig.align = 'center', echo = FALSE, message = FALSE, warning = FALSE}
+parks_standardized %>%
+  group_by(region, year) %>%
+  summarise(avg_score_region = mean(total_pct)) %>%
+  ggplot(aes(x = region, y = avg_score_region, fill = region)) +
+  geom_col() +
+  facet_wrap(~year) +
+  theme_classic() +
+  ggtitle("Park score of US regions by year", subtitle = "As measured by total points/100") +
+  ylab("Total points") +
+  xlab("Region") +
+  theme(legend.position = "none") +
+  scale_fill_brewer(palette = "Paired")
+```
+
+
+What makes Midwestern cities' parks perform so well? Is it possible that Midwestern cities outperform other U.S. cities in one particular metric? For example, it could be possible that Midwestern cities invest more in their parks. 
+
+Let's explore the relationship between each one of the four metrics and the total park score for all cities. In this case we'll only focus on last year's data, which should be enough to get an idea about the relationship between each metric and the total score. Furthermore, I've applied a LOESS function to help visualize the relationship between each metric and the total score.
+
+### Scatter plots - cities
+```{r, fig.align = 'center', echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 8}
+
+acreage2020 <- parks_standardized %>%
+  filter(year == 2020) %>%
+  ggplot(aes(x = (park_pct_city_points + med_park_size_points), y = total_pct, color = region)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  ggtitle("Total points plotted against acreage points, 2020", subtitle = "As measured by total points/100") +
+  ylab("Total points (%)") +
+  xlab("Acreage score") +
+  geom_smooth(span = 1, alpha = 0.1, se = FALSE) +
+  scale_color_brewer(palette = "Paired")
+
+investment2020 <- parks_standardized %>%
+  filter(year == 2020) %>%
+  ggplot(aes(x = spend_per_resident_points, y = total_pct, color = region)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  ggtitle("Total points plotted against investment points, 2020", subtitle = "As measured by total points/100") +
+  ylab("Total points") +
+  xlab("Investment score") +
+  geom_smooth(span = 1, alpha = 0.1, se = FALSE) +
+  scale_color_brewer(palette = "Paired")
+
+accessibility2020 <- parks_standardized %>%
+  filter(year == 2020) %>%
+  ggplot(aes(x = pct_near_park_points, y = total_pct, color = region)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  ggtitle("Total points plotted against accessibility points, 2020", subtitle = "As measured by total points/100") +
+  ylab("Total points") +
+  xlab("Accesibility score") +
+  geom_smooth(span = 1, alpha = 0.1, se = FALSE) +
+  scale_color_brewer(palette = "Paired")
+
+amenities2020<- parks_standardized %>%
+  filter(year == 2020) %>%
+  ggplot(aes(x = amenities_points, y = total_pct, color = region)) +
+  geom_point(size = 2) +
+  theme_classic() +
+  ggtitle("Total points plotted against amenities points, 2020", subtitle = "As measured by total points/100") +
+  ylab("Total points") +
+  xlab("Amenities score") +
+  geom_smooth(span = 1, alpha = 0.1, se = FALSE) +
+  scale_color_brewer(palette = "Paired")
+
+cowplot::plot_grid(acreage2020, investment2020, accessibility2020, amenities2020, 
+                   labels = c('A', 'B', 'C', 'D'),
+                   label_size = 12)
+```
+```{r, fig.align = 'center', echo = FALSE, message = FALSE, warning = FALSE}
+plot_usmap(fill = "grey", alpha = 0.3) +
+  geom_point(data = us.cities_mapt,
+             aes(x = long.1, y = lat.1, color = total_pct),
+             size = 4) +
+  geom_label_repel(data = us.cities_mapt %>%
+                     mutate(name2 = ifelse((total_pct > 75 | total_pct < 37), name, "")),
+                            aes(x = long.1, y = lat.1, label = name2),
+                            size = 3, alpha = 0.8,
+                            label.r = unit(0.5, "lines"), label.size = 0.5,
+                            segment.color = "black",
+                            segment.size = 1,
+                            max.overlaps = 15) +
+
+  scale_color_gradient(low = "#FFFF99", high = "#E31A1C") +
+  scale_size_continuous(range = c(1, 30),
+                        label = scales::comma) +
+  labs(title = "Total park score, 2020",
+       subtitle = "As measured by total points/100", col = "Total score") +
+  theme(legend.position = "right")
+
+```
+
+
+In chart A above, which shows the relationship between acreage score and total score, each point represents one city, colored by the region it belongs to. As shown in the graph, there is no obvious positive relation between acreage score and total points for all regions except for the south. In fact, there seems to be an inverted U-shape relationship between acreage score and total points for Western and Midwestern cities. This means that bigger parks are in general better but to a certain extent; past some optimal acreage score value, it would seem that a high acreage score value does not necessarily translate into better parks. Finally, as we saw before, we can again see that Southern cities tend to have lower total scores than the rest of U.S. cities. This can also be vizualized in the map shown above, which presents all cities that were analyzed in 2020 by the TPL. The points in red are cities with high total scores whereas those in yellow have low total scores.
+
+Unlike in chart A, for charts B, C and D, there is indeed a more apparent positive relation between each metric and total points, for all regions. It would seem that the relationship between investment score and total points is the strongest one among all metrics. This means that if a city has a high investment score, then it is very likely to also have a high total score. Contrast this to the relation between acreage score and total points mentioned before, where a city with a high acreage score does not necessarily imply that it will have a high total score.
+
+Although the above charts are useful to visualize the relationships between the four metrics and total score, it may be more useful to present a correlogram or a correlation matrix to better assess the relation (correlation) between the metrics and total score.
+
+### Correlogram - metric scores
+
+```{r, fig.align = 'center', echo = FALSE, message = FALSE, warning = FALSE}
+parks_std_2020 <- parks_standardized %>%
+  filter(year == 2020) %>%
+  mutate(acreage_points = med_park_size_points + park_pct_city_points) %>%
+  select(amenities_points, spend_per_resident_points, pct_near_park_points, acreage_points, total_points)
+
+cor_2020 <- cor(parks_std_2020)
+colnames(cor_2020) <- c("Amenities", "Investment", "Accessibility", "Acreage", "Total")
+rownames(cor_2020) <- c("Amenities", "Investment", "Accessibility", "Acreage", "Total")
+
+corrplot(cor_2020, type = 'lower', 
+         title = "Correlogram: metric scores and total score (2020)",
+         order = 'hclust',
+         method = 'color',
+         addCoef.col = T,
+         tl.col = 'black',
+         number.cex = 0.8,
+         mar = c(0,0,0.8,0))
+```
+
+The correlogram shows the correlation between each of the metrics, including total score. A correlation of 1 (shaded in dark blue) indicates a perfect positive correlation and a correlation of -1 (shaded in dark red) indicates a perfect inverse correlation. 
+
+The correlogram reveals a couple of insights. First, as we saw before, the correlation between investment and total score is very strong (0.89) and the correlation between acreage score and total score is not very high (0.28). Second, we now have the correlations between the metrics themselves. Most correlations are positive except for two correlations: the correlation between acreage and amenities (-0.13) and acreage and accessibility (-0.27). 
+
+These last two correlations suggest that as park size increases, there are fewer amenities and that these parks are less accessible. This shouldn't come as too big of a surprise: it may be more difficult to build amenities in large parks and these relatively large parks may be located on the outskirts of a city, which may make them more inaccessible. Furthermore, these large parks could act as local "nature parks", meaning that amenities may not be necessarily required in these parks; just as in proper nature parks, visitors may visit the park to enjoy the landscape and nature.
+
+Although these findings are interesting, we should be careful not to attribute **causality** to these relationships. However, they do provide some sort of starting point for further (causal) analyses and make way for interesting hypothesis formulations, such as the ones described in the previous paragraph.
